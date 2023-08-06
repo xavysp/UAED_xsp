@@ -6,7 +6,8 @@ import torch
 import imageio
 import torchvision.transforms as transforms
 import scipy.io
-import random
+import random, json
+import cv2
 
 class BSDS_RCFLoader(data.Dataset):
     """
@@ -68,6 +69,83 @@ class BSDS_RCFLoader(data.Dataset):
             return img, label,lb_mean,lb_std
             
         else:
-            return img
-            
+            return img, None
+
+class DMRIRloader(data.Dataset):
+    def __init__(self,
+                 data_root="C:/dataset/DMR-IR",
+                 test_data="DMRIR",
+                 test_list='test_pair.lst',
+                 mean_bgr=[60.939, 72.779, 60.68, 137.86]
+                 ):
+        self.data_root = data_root
+        self.test_data = test_data
+        self.test_list = test_list
+        self.images_name = []
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            normalize])
+
+        self.mean_bgr = mean_bgr if len(mean_bgr) == 3 else mean_bgr[:3]
+        self.data_index = self._build_index()
+    def _build_index(self):
+        sample_indices = []
+
+        if not self.test_list:
+            raise ValueError(
+                f"Test list not provided for dataset: {self.test_data}")
+
+        list_name = os.path.join(self.data_root, self.test_list)
+        with open(list_name) as f:
+            files = json.load(f)
+        for pair in files:
+            tmp_img = pair[0]
+            tmp_gt = pair[1]
+            a = tmp_img[:-3]+"png"
+            a = a.replace("npy", 'png')
+            name = os.path.basename(a)
+            name, ext = os.path.splitext(name)
+            sample_indices.append(
+                (a,tmp_gt,))
+            self.images_name.append(name)
+
+        return sample_indices
+
+    def __len__(self):
+        return len(self.data_index)
+
+    def __getitem__(self, idx):
+        # get data sample
+        # image_path, label_path = self.data_index[idx]
+        if self.data_index[1] is None:
+            image_path = self.data_index[0][idx] if len(self.data_index[0]) > 1 else self.data_index[0][idx - 1]
+        else:
+            image_path = self.data_index[idx][0]
+        label_path = None #  self.data_index[idx][1]
+        img_name = os.path.basename(image_path)
+
+        # load data
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        label = None
+        im_shape = [image.shape[0], image.shape[1]]
+        image = self.transform(image)
+        label = False if image_path.find("healthy") == -1 else True
+        # if label true it is healthy
+        # return dict(images=image, labels=label, file_names=file_name, image_shape=im_shape)
+        return image, label
+
+    # def transform(self, img, gt):
+    #     # Make sure images and labels are divisible by 2^4=16
+    #
+    #     img = np.array(img, dtype=np.float32)
+    #     img -= self.mean_bgr
+    #     img = img.transpose((2, 0, 1)) # BGR to RGB
+    #     img = torch.from_numpy(img.copy()).float()
+    #
+    #     gt = np.zeros((img.shape[:2]))
+    #     gt = torch.from_numpy(np.array([gt])).float()
+    #
+    #     return img, gt
 

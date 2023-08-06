@@ -3,7 +3,7 @@ from torch import nn
 
 #!/user/bin/python
 # coding=utf-8
-train_root="/data/private/zhoucaixia/workspace/UD_Edge/"
+train_root=""
 import os, sys
 from statistics import mode
 sys.path.append(train_root)
@@ -19,8 +19,8 @@ import torchvision
 import matplotlib
 matplotlib.use('Agg')
 
-from data.data_loader_one_random_uncert import BSDS_RCFLoader
-MODEL_NAME="models.sigma_logit_unetpp"
+from data.data_loader_one_random_uncert import BSDS_RCFLoader, DMRIRloader
+MODEL_NAME="model.sigma_logit_unetpp"
 import importlib
 Model = importlib.import_module(MODEL_NAME)
 
@@ -36,10 +36,17 @@ import ssl
 import cv2
 ssl._create_default_https_context = ssl._create_unverified_context
 from torch.distributions import Normal, Independent
+
+
 os.environ["CUDA_LAUNCH_BLOCKING"]="1"
 parser = argparse.ArgumentParser(description='PyTorch Training')
 parser.add_argument('--batch_size', default=4, type=int, metavar='BT',
                     help='batch size')
+parser.add_argument('--is_testing', default=True, type=bool,
+                    help='True: to get edge-maps ')
+parser.add_argument('--chpt_all_path', help='tmp folder',
+                    default='trained/BSDS/epoch-19-checkpoint.pth')
+
 # =============== optimizer
 parser.add_argument('--LR', '--learning_rate', default=0.0001, type=float,
                     metavar='LR', help='initial learning rate')
@@ -76,8 +83,8 @@ if not isdir(TMP_DIR):
   os.makedirs(TMP_DIR)
 
 file_name=os.path.basename(__file__)
-copyfile(join(train_root,MODEL_NAME[:6],MODEL_NAME[7:]+".py"),join(TMP_DIR,MODEL_NAME[7:]+".py"))
-copyfile(join(train_root,"train",file_name),join(TMP_DIR,file_name))
+copyfile(join(train_root,MODEL_NAME[:5],MODEL_NAME[6:]+".py"),join(TMP_DIR,MODEL_NAME[7:]+".py"))
+copyfile(join(train_root,file_name),join(TMP_DIR,file_name))
 random_seed = 555
 if random_seed > 0:
     random.seed(random_seed)
@@ -115,41 +122,60 @@ def step_lr_scheduler(optimizer, epoch, init_lr=args.LR, lr_decay_epoch=3):
 
     return optimizer
 def main():
-    args.cuda = True
-    train_dataset = BSDS_RCFLoader(root=args.dataset, split= "train")
-    test_dataset = BSDS_RCFLoader(root=args.dataset,  split= "test")
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size,
-        num_workers=8, drop_last=True,shuffle=True)
-    test_loader = DataLoader(
-        test_dataset, batch_size=1,
-        num_workers=8, drop_last=True,shuffle=False)
-    with open('/data/private/zhoucaixia/Dataset/HED-BSDS/test.lst', 'r') as f:
-        test_list = f.readlines()
-    test_list = [split(i.rstrip())[1] for i in test_list]
-    assert len(test_list) == len(test_loader), "%d vs %d" % (len(test_list), len(test_loader))
 
+    device = torch.device('cpu' if torch.cuda.device_count() == 0
+                          else 'cuda')
     # model
-    model=Model.Mymodel(args).cuda()
+    args.cuda = True if device=="cuda" else False
+    if args.cuda:
+        model=Model.Mymodel(args).cuda()
+    else:
+        model = Model.Mymodel(args)
 
-    
+    if args.is_testing:
+        test_dataset = DMRIRloader()
 
-    log = Logger(join(TMP_DIR, '%s-%d-log.txt' %('Adam',args.LR)))
-    sys.stdout = log
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.LR,weight_decay=args.weight_decay)
-    
-    for epoch in range(args.start_epoch, args.maxepoch):
-        # if epoch==0:
-        #     test(model, test_loader, epoch=epoch, test_list=test_list,
-        #     save_dir = join(TMP_DIR, 'epoch-%d-testing-record-view' % epoch))
-        train(train_loader, model, optimizer,epoch,
-            save_dir = join(TMP_DIR, 'epoch-%d-training-record' % epoch))
-        test(model, test_loader, epoch=epoch, test_list=test_list,
-            save_dir = join(TMP_DIR, 'epoch-%d-testing-record-view' % epoch))
-        multiscale_test(model, test_loader, epoch=epoch, test_list=test_list,
-            save_dir = join(TMP_DIR, 'epoch-%d-testing-record' % epoch))
-        log.flush() # write log
+        test_loader = DataLoader(
+            test_dataset, batch_size=1,
+            num_workers=8, drop_last=True, shuffle=False)
+        checkpoint_path = args.chpt_all_path
+        checkpoint = torch.load(checkpoint_path,map_location=device)
+        model.load_state_dict(checkpoint["state_dict"])
+        print(f"Checkpoints restored successfully from: {checkpoint_path}")
+
+        test2(model, test_loader,
+             save_dir=join("results","BSDS2DMRIR"),
+              device=device)
+    else:
+        train_dataset = BSDS_RCFLoader(root=args.dataset, split="train")
+        test_dataset = BSDS_RCFLoader(root=args.dataset, split="test")
+        train_loader = DataLoader(
+            train_dataset, batch_size=args.batch_size,
+            num_workers=8, drop_last=True, shuffle=True)
+        test_loader = DataLoader(
+            test_dataset, batch_size=1,
+            num_workers=8, drop_last=True, shuffle=False)
+        with open('/data/private/zhoucaixia/Dataset/HED-BSDS/test.lst', 'r') as f:
+            test_list = f.readlines()
+        test_list = [split(i.rstrip())[1] for i in test_list]
+        assert len(test_list) == len(test_loader), "%d vs %d" % (len(test_list), len(test_loader))
+
+        log = Logger(join(TMP_DIR, '%s-%d-log.txt' %('Adam',args.LR)))
+        sys.stdout = log
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.LR,weight_decay=args.weight_decay)
+
+        for epoch in range(args.start_epoch, args.maxepoch):
+            # if epoch==0:
+            #     test(model, test_loader, epoch=epoch, test_list=test_list,
+            #     save_dir = join(TMP_DIR, 'epoch-%d-testing-record-view' % epoch))
+            train(train_loader, model, optimizer,epoch,
+                save_dir = join(TMP_DIR, 'epoch-%d-training-record' % epoch))
+            test(model, test_loader, epoch=epoch, test_list=test_list,
+                save_dir = join(TMP_DIR, 'epoch-%d-testing-record-view' % epoch))
+            multiscale_test(model, test_loader, epoch=epoch, test_list=test_list,
+                save_dir = join(TMP_DIR, 'epoch-%d-testing-record' % epoch))
+            log.flush() # write log
 
 
 def train(train_loader, model,optimizer,epoch, save_dir):
@@ -216,6 +242,59 @@ def train(train_loader, model,optimizer,epoch, save_dir):
         'state_dict': model.state_dict(),
             }, filename=join(save_dir, "epoch-%d-checkpoint.pth" % epoch))
 
+
+def test2(model, test_loader, save_dir,device="cpu"):
+    model.eval()
+    os.makedirs(os.path.join(save_dir, "healthy"), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "infected"), exist_ok=True)
+
+    for idx, (image,is_healthy) in enumerate(test_loader):
+        image = image.to(device)
+        if is_healthy:
+            tmp_dir = os.path.join(save_dir, "healthy")
+        else:
+            tmp_dir = os.path.join(save_dir, "infected")
+
+        mean, std = model(image)
+        outputs_dist = Independent(Normal(loc=mean, scale=std + 0.001), 1)
+        outputs = torch.sigmoid(outputs_dist.rsample())
+        png = torch.squeeze(outputs.detach()).cpu().numpy()
+        _, _, H, W = image.shape
+        result = np.zeros((H + 1, W + 1))
+        result[1:, 1:] = png
+        filename = test_loader.images_name[idx]
+        result_png = Image.fromarray((result * 255).astype(np.uint8))
+
+        # png_save_dir = os.path.join(tmp_dir, "png")
+        # mat_save_dir = os.path.join(tmp_dir, "mat")
+
+        # if not os.path.exists(png_save_dir):
+        #     os.makedirs(png_save_dir)
+
+        # if not os.path.exists(mat_save_dir):
+        #     os.makedirs(mat_save_dir)
+        result_png.save(join(tmp_dir, "%s.png" % filename))
+        # io.savemat(join(mat_save_dir, "%s.mat" % filename), {'result': result}, do_compression=True)
+
+        mean = torch.squeeze(mean.detach()).cpu().numpy()
+        result_mean = np.zeros((H + 1, W + 1))
+        result_mean[1:, 1:] = mean
+        result_mean_png = Image.fromarray((result_mean).astype(np.uint8))
+        mean_save_dir = os.path.join(tmp_dir, "mean")
+
+        if not os.path.exists(mean_save_dir):
+            os.makedirs(mean_save_dir)
+        result_mean_png.save(join(mean_save_dir, "%s.png" % filename))
+
+        std = torch.squeeze(std.detach()).cpu().numpy()
+        result_std = np.zeros((H + 1, W + 1))
+        result_std[1:, 1:] = std
+        result_std_png = Image.fromarray((result_std * 255).astype(np.uint8))
+        std_save_dir = os.path.join(tmp_dir, "std")
+
+        if not os.path.exists(std_save_dir):
+            os.makedirs(std_save_dir)
+        result_std_png.save(join(std_save_dir, "%s.png" % filename))
 
 
 def test(model, test_loader, epoch, test_list, save_dir):
